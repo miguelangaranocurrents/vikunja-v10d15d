@@ -3,7 +3,7 @@ import {nextTick, toValue, type MaybeRefOrGetter, type Ref} from 'vue'
 import StarterKit from '@tiptap/starter-kit'
 import {createNodeFromContent, Extension, mergeAttributes, type Editor, type Extensions} from '@tiptap/core'
 import {Plugin, PluginKey} from '@tiptap/pm/state'
-import {Fragment} from '@tiptap/pm/model'
+import {Fragment, type Node as ProseMirrorNode} from '@tiptap/pm/model'
 import {marked} from 'marked'
 
 import Link from '@tiptap/extension-link'
@@ -127,6 +127,45 @@ const additionalLinkProtocols = [
 	'message',
 ]
 
+function serializeNodeAsText(node: ProseMirrorNode, indent = ''): string {
+	const listTypes = ['bulletList', 'orderedList', 'taskList']
+	if (listTypes.includes(node.type.name)) {
+		const lines: string[] = []
+		let index = Number(node.attrs.start ?? 1)
+		node.forEach(item => {
+			let marker = '- '
+			if (node.type.name === 'orderedList') {
+				marker = `${index++}. `
+			} else if (node.type.name === 'taskList') {
+				marker = item.attrs.checked ? '- [x] ' : '- [ ] '
+			}
+			const parts: string[] = []
+			item.forEach(child => {
+				parts.push(serializeNodeAsText(child, indent + ' '.repeat(marker.length)))
+			})
+			// Nested lists already carry their own indentation.
+			const [first = '', ...rest] = parts.join('\n').split('\n')
+			lines.push(indent + marker + first.trimStart(), ...rest)
+		})
+		return lines.join('\n')
+	}
+	if (node.isTextblock) {
+		return node.textBetween(0, node.content.size, '\n', '\n')
+	}
+	if (node.childCount > 0) {
+		const parts: string[] = []
+		node.forEach(child => parts.push(serializeNodeAsText(child, indent)))
+		return parts.join('\n\n')
+	}
+	return node.textContent
+}
+
+function serializeSliceAsText(content: Fragment): string {
+	const parts: string[] = []
+	content.forEach(node => parts.push(serializeNodeAsText(node)))
+	return parts.join('\n\n')
+}
+
 export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 	const {
 		t,
@@ -232,6 +271,8 @@ export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 					key: new PluginKey('pasteHandler'),
 					props: {
 						clipboardParser: createClipboardParser(this.editor.schema),
+						// Keep list markers when copying as plain text.
+						clipboardTextSerializer: slice => serializeSliceAsText(slice.content),
 						transformPasted: slice => repairSliceContent(slice),
 
 						handlePaste: (view, event) => {
